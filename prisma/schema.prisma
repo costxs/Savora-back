@@ -1,0 +1,126 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Restaurant {
+  id         Int        @id @default(autoincrement())
+  name       String
+  slug       String     @unique
+
+  users      User[]
+  products   Product[]
+  categories Category[]
+  orders     Order[]
+  cashiers   Cashier[]
+  kitchens   Kitchen[]
+}
+
+model User {
+  id           Int        @id @default(autoincrement())
+  name         String
+  username     String
+  password     String
+  role         String     @default("WAITER")
+
+  restaurantId Int
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+
+  @@unique([username, restaurantId])
+}
+
+model Cashier {
+  id         Int       @id @default(autoincrement())
+  openedAt   DateTime  @default(now())
+  closedAt   DateTime?
+  initialVal Float
+  finalVal   Float?
+  status     String    @default("Aberto")
+  operator   String
+  orders     Order[]
+
+  restaurantId Int?
+  restaurant   Restaurant? @relation(fields: [restaurantId], references: [id])
+}
+
+model Order {
+  id            Int      @id @default(autoincrement())
+  createdAt     DateTime @default(now())
+  total         Float
+  status        String   @default("Finalizado")
+  kitchenStatus String   @default("PENDING")
+  tableNum      Int?
+  clientName    String?
+  waiterId      String?
+
+  paidCash Float @default(0.0)
+  paidPix  Float @default(0.0)
+  paidCard Float @default(0.0)
+  change   Float @default(0.0)
+
+  cashierId Int?
+  cashier   Cashier?    @relation(fields: [cashierId], references: [id])
+  items     OrderItem[]
+
+  restaurantId Int?
+  restaurant   Restaurant? @relation(fields: [restaurantId], references: [id])
+}
+
+model OrderItem {
+  id        Int     @id @default(autoincrement())
+  quantity  Int
+  price     Float
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+  orderId   Int
+  order     Order   @relation(fields: [orderId], references: [id])
+}
+
+model Product {
+  id         Int         @id @default(autoincrement())
+  name       String
+  price      Float
+  cost       Float       @default(0.0)
+  code       String?
+  categoryId Int?
+  category   Category?   @relation(fields: [categoryId], references: [id])
+  items      OrderItem[]
+
+  restaurantId Int?
+  restaurant   Restaurant? @relation(fields: [restaurantId], references: [id])
+}
+
+model Category {
+  id         Int      @id @default(autoincrement())
+  name       String
+  kitchen    String?
+  kitchenId  Int?
+  kitchenRef Kitchen? @relation(fields: [kitchenId], references: [id])
+  products   Product[]
+
+  restaurantId Int?
+  restaurant   Restaurant? @relation(fields: [restaurantId], references: [id])
+}
+
+model Kitchen {
+  id           Int         @id @default(autoincrement())
+  name         String
+  restaurantId Int?
+  restaurant   Restaurant? @relation(fields: [restaurantId], references: [id])
+  categories   Category[]
+}
+
+model Expense {
+  id          Int      @id @default(autoincrement())
+  description String
+  amount      Float
+  dueDate     DateTime
+  status      String   @default("PENDING")
+  category    String   @default("OPERATIONAL")
+  createdAt   DateTime @default(now())
+}

@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["public"]
+}
+
+model Cashier {
+  id         Int       @id @default(autoincrement())
+  openedAt   DateTime  @default(now())
+  closedAt   DateTime?
+  initialVal Float
+  finalVal   Float?
+  status     String    @default("Aberto")
+  operator   String
+  orders     Order[]
+
+  @@schema("public")
+}
+
+model Order {
+  id            Int      @id @default(autoincrement())
+  createdAt     DateTime @default(now())
+  total         Float
+  status        String   @default("Finalizado") // Finalizado, Cancelado, PENDENTE
+  kitchenStatus String   @default("PENDING") // PENDING, PREPARING, READY, DELIVERED
+  tableNum      Int?
+  clientName    String?
+  waiterId      String? // ID do garçom no Supabase
+
+  // --- NOVOS CAMPOS DE PAGAMENTO ---
+  paidCash Float @default(0.0)
+  paidPix  Float @default(0.0)
+  paidCard Float @default(0.0)
+  change   Float @default(0.0) // Troco
+
+  cashierId Int?
+  cashier   Cashier?    @relation(fields: [cashierId], references: [id])
+  items     OrderItem[]
+
+  @@schema("public")
+}
+
+model OrderItem {
+  id        Int     @id @default(autoincrement())
+  quantity  Int
+  price     Float
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+  orderId   Int
+  order     Order   @relation(fields: [orderId], references: [id])
+
+  @@schema("public")
+}
+
+model Product {
+  id         Int         @id @default(autoincrement())
+  name       String
+  price      Float
+  cost       Float       @default(0.0) // Novo: Custo
+  code       String? // Novo: Código do produto
+  categoryId Int?
+  category   Category?   @relation(fields: [categoryId], references: [id])
+  items      OrderItem[]
+
+  @@schema("public")
+}
+
+model Category {
+  id       Int       @id @default(autoincrement())
+  name     String
+  kitchen  String? // Novo: Impressora/Cozinha de destino
+  products Product[]
+
+  @@schema("public")
+}
+
+model Expense {
+  id          Int      @id @default(autoincrement())
+  description String
+  amount      Float
+  dueDate     DateTime
+  status      String   @default("PENDING") // PENDING, PAID
+  category    String   @default("OPERATIONAL") // OPERATIONAL, FINANCIAL, TAX
+  createdAt   DateTime @default(now())
+
+  @@schema("public")
+}
