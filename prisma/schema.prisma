@@ -19,6 +19,7 @@ model Restaurant {
   orders     Order[]
   cashiers   Cashier[]
   kitchens   Kitchen[]
+  paymentMethods PaymentMethod[]
 }
 
 model User {
@@ -76,7 +77,7 @@ model OrderItem {
   quantity  Int
   price     Float
   productId Int
-  product   Product @relation(fields: [productId], references: [id])
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
   orderId   Int
   order     Order   @relation(fields: [orderId], references: [id])
 }
@@ -88,7 +89,7 @@ model Product {
   cost       Float       @default(0.0)
   code       String?
   categoryId Int?
-  category   Category?   @relation(fields: [categoryId], references: [id])
+  category   Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   items      OrderItem[]
 
   restaurantId Int?
@@ -113,6 +114,15 @@ model Kitchen {
   restaurantId Int?
   restaurant   Restaurant? @relation(fields: [restaurantId], references: [id])
   categories   Category[]
+}
+
+model PaymentMethod {
+  id           Int         @id @default(autoincrement())
+  name         String
+  type         String      @default("CASH") // CASH, PIX, CARD, OTHER
+  active       Boolean     @default(true)
+  restaurantId Int?
+  restaurant   Restaurant? @relation(fields: [restaurantId], references: [id])
 }
 
 model Expense {

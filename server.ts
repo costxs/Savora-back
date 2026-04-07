@@ -66,21 +66,16 @@ app.post('/login', async (req, res) => {
 
 // 1. Pega o status atual (Se tem algum aberto)
 app.get('/cashier/status', async (req, res) => {
+    const rid = req.query.rid ? Number(req.query.rid) : undefined;
     try {
         const cashier = await prisma.cashier.findFirst({
-            where: { status: 'Aberto' },
-            include: {
-                orders: true // Traz os pedidos para somarmos (ou usa aggregate se preferir)
-            }
+            where: { status: 'Aberto', ...(rid ? { restaurantId: rid } : {}) },
+            include: { orders: true }
         });
 
         if (!cashier) return res.json(null);
 
-        // Soma apenas os pedidos que não foram cancelados
-        // Se você tiver status 'PAGO', filtre por ele. Aqui somamos todos do caixa.
         const totalSales = cashier.orders.reduce((acc, order) => acc + order.total, 0);
-
-        // Retorna o caixa + o total vendido calculado
         res.json({ ...cashier, totalSales });
     } catch (error) {
         res.status(500).json({ error: 'Erro ao buscar status' });
@@ -99,9 +94,10 @@ app.get('/cashier/history', async (req, res) => {
 
 // 3. Abrir Caixa (Impede abrir se já tiver um aberto)
 app.post('/cashier/open', async (req, res) => {
-    const { initialVal, operator } = req.body;
+    const { initialVal, operator, restaurantId } = req.body;
+    const rid = restaurantId ? Number(restaurantId) : undefined;
 
-    const alreadyOpen = await prisma.cashier.findFirst({ where: { status: 'Aberto' } });
+    const alreadyOpen = await prisma.cashier.findFirst({ where: { status: 'Aberto', ...(rid ? { restaurantId: rid } : {}) } });
     if (alreadyOpen) {
         return res.status(400).json({ error: 'Já existe um caixa aberto.' });
     }
@@ -110,7 +106,8 @@ app.post('/cashier/open', async (req, res) => {
         data: {
             initialVal: parseFloat(initialVal),
             operator: operator || 'Caixa 01',
-            status: 'Aberto'
+            status: 'Aberto',
+            ...(rid ? { restaurantId: rid } : {})
         }
     });
     res.json(newCashier);
@@ -133,30 +130,26 @@ app.post('/cashier/close', async (req, res) => {
 
 // 5. Listar Vendas do Caixa Atual (Abertas e Fechadas)
 app.get('/cashier/active-sales', async (req, res) => {
+    const rid = req.query.rid ? Number(req.query.rid) : undefined;
     try {
-        // 1. Pega o caixa aberto
         const openCashier = await prisma.cashier.findFirst({
-            where: { status: 'Aberto' }
+            where: { status: 'Aberto', ...(rid ? { restaurantId: rid } : {}) }
         });
 
-        let whereCondition: any = {};
+        let whereCondition: any = rid ? { restaurantId: rid } : {};
 
         if (openCashier) {
-            // Se tem caixa aberto, mostra:
-            // 1. Pedidos pendentes (mesas ocupadas)
-            // 2. Pedidos vinculados a este caixa
             whereCondition = {
+                ...whereCondition,
                 OR: [
                     { status: 'PENDENTE' },
                     { cashierId: openCashier.id }
                 ]
             };
         } else {
-            // Se NÃO tem caixa aberto, mostra:
-            // 1. Pedidos pendentes
-            // 2. Pedidos criados nas últimas 24 horas (para ver o histórico recente mesmo com caixa fechado)
             const oneDayAgo = new Date(new Date().getTime() - 24 * 60 * 60 * 1000);
             whereCondition = {
+                ...whereCondition,
                 OR: [
                     { status: 'PENDENTE' },
                     { createdAt: { gte: oneDayAgo } }
@@ -166,9 +159,7 @@ app.get('/cashier/active-sales', async (req, res) => {
 
         const sales = await prisma.order.findMany({
             where: whereCondition,
-            include: {
-                items: { include: { product: true } }
-            },
+            include: { items: { include: { product: true } } },
             orderBy: { createdAt: 'desc' }
         });
 
@@ -181,32 +172,60 @@ app.get('/cashier/active-sales', async (req, res) => {
 
 // --- ROTA: BUSCAR PEDIDOS ABERTOS (Para pintar as mesas) ---
 app.get('/orders/open', async (req, res) => {
+    const rid = req.query.rid ? Number(req.query.rid) : undefined;
     const openOrders = await prisma.order.findMany({
-        where: { status: 'PENDENTE' }, // Só mesas ocupadas
-        include: { items: { include: { product: true } } } // Traz os itens da mesa
+        where: rid
+            ? { status: 'PENDENTE', OR: [{ restaurantId: rid }, { restaurantId: null }] }
+            : { status: 'PENDENTE' },
+        include: { items: { include: { product: true } } }
     });
-    res.json(openOrders);
+    // Filter in-memory para remover pedidos de OUTROS restaurantes (que tenham rid != null)
+    const filtered = rid
+        ? openOrders.filter(o => o.restaurantId === null || o.restaurantId === rid)
+        : openOrders;
+    res.json(filtered);
+});
+
+// --- ROTA: MIGRAR DADOS LEGADOS (Atribuir restaurantId aos registros antigos) ---
+app.post('/admin/migrate-restaurant-data', async (req, res) => {
+    const { restaurantId } = req.body;
+    if (!restaurantId) return res.status(400).json({ error: 'restaurantId obrigatório' });
+    const rid = Number(restaurantId);
+
+    try {
+        // Atribui restaurantId aos registros que ainda não têm
+        const [orders, cashiers, products, categories, payments] = await Promise.all([
+            prisma.order.updateMany({ where: { restaurantId: null }, data: { restaurantId: rid } }),
+            prisma.cashier.updateMany({ where: { restaurantId: null }, data: { restaurantId: rid } }),
+            prisma.product.updateMany({ where: { restaurantId: null }, data: { restaurantId: rid } }),
+            prisma.category.updateMany({ where: { restaurantId: null }, data: { restaurantId: rid } }),
+            prisma.paymentMethod.updateMany({ where: { restaurantId: null }, data: { restaurantId: rid } }),
+        ]);
+        res.json({ success: true, updated: { orders: orders.count, cashiers: cashiers.count, products: products.count, categories: categories.count, payments: payments.count } });
+    } catch (error) {
+        console.error('Erro na migração:', error);
+        res.status(500).json({ error: 'Erro ao migrar dados' });
+    }
 });
 
 // --- ROTA: SALVAR/ATUALIZAR PEDIDO DA MESA ---
 app.post('/orders', async (req, res) => {
-    const { tableNum, items, total, clientName, waiterId } = req.body;
+    const { tableNum, items, total, clientName, waiterId, restaurantId } = req.body;
+    const rid = restaurantId ? Number(restaurantId) : undefined;
 
     try {
-        // SEMPRE CRIA UM NOVO PEDIDO (Batch)
-        // Isso permite que cada envio vá separado para a cozinha
         const order = await prisma.order.create({
             data: {
                 tableNum: Number(tableNum),
                 total: parseFloat(total),
                 clientName: clientName || `Mesa ${tableNum}`,
                 status: 'PENDENTE',
-                kitchenStatus: 'PENDING', // Começa como pendente na cozinha
-                waiterId: waiterId || null
+                kitchenStatus: 'PENDING',
+                waiterId: waiterId ? String(waiterId) : null,
+                ...(rid ? { restaurantId: rid } : {})
             }
         });
 
-        // 2. Insere os itens
         if (items && items.length > 0) {
             for (const item of items) {
                 await prisma.orderItem.create({
@@ -222,24 +241,25 @@ app.post('/orders', async (req, res) => {
 
         res.json(order);
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Erro ao salvar pedido' });
+        console.error("ERRO NO CREATE ORDER:", error);
+        res.status(500).json({ error: 'Erro ao salvar pedido', details: String(error) });
     }
 });
 
 // --- ROTA: FECHAR MESA (PAGAMENTO) ---
 app.post('/orders/close', async (req, res) => {
-    const { tableNum, paidCash, paidPix, paidCard, change } = req.body;
+    const { tableNum, paidCash, paidPix, paidCard, change, restaurantId } = req.body;
+    const rid = restaurantId ? Number(restaurantId) : undefined;
 
     try {
         // 1. Procura o Caixa que está ABERTO no momento
         const openCashier = await prisma.cashier.findFirst({
-            where: { status: 'Aberto' }
+            where: { status: 'Aberto', ...(rid ? { restaurantId: rid } : {}) }
         });
 
         // 2. Encontra TODOS os pedidos pendentes da mesa
         const orders = await prisma.order.findMany({
-            where: { tableNum: Number(tableNum), status: 'PENDENTE' }
+            where: { tableNum: Number(tableNum), status: 'PENDENTE', ...(rid ? { restaurantId: rid } : {}) }
         });
 
         if (orders.length === 0) return res.status(400).json({ error: 'Nenhum pedido encontrado para esta mesa.' });
@@ -256,7 +276,7 @@ app.post('/orders/close', async (req, res) => {
 
         // Atualiza todos para CONCLUIDO e vincula ao caixa
         await prisma.order.updateMany({
-            where: { tableNum: Number(tableNum), status: 'PENDENTE' },
+            where: { tableNum: Number(tableNum), status: 'PENDENTE', ...(rid ? { restaurantId: rid } : {}) },
             data: {
                 status: 'CONCLUIDO',
                 cashierId: openCashier ? openCashier.id : null,
@@ -287,8 +307,10 @@ app.post('/orders/close', async (req, res) => {
 
 // 1. LISTAR PRODUTOS
 app.get('/products', async (req, res) => {
+    const rid = req.query.rid ? Number(req.query.rid) : undefined;
     try {
         const products = await prisma.product.findMany({
+            where: rid ? { restaurantId: rid } : {},
             include: { category: true }
         });
         res.json(products);
@@ -300,7 +322,8 @@ app.get('/products', async (req, res) => {
 
 // 2. CADASTRAR PRODUTO
 app.post('/products', async (req, res) => {
-    const { name, price, cost, code, categoryId } = req.body;
+    const { name, price, cost, code, categoryId, restaurantId } = req.body;
+    const rid = restaurantId ? Number(restaurantId) : undefined;
 
     try {
         const product = await prisma.product.create({
@@ -309,7 +332,8 @@ app.post('/products', async (req, res) => {
                 price: parseFloat(price),
                 cost: parseFloat(cost || 0),
                 code: code || '',
-                categoryId: Number(categoryId)
+                categoryId: Number(categoryId),
+                ...(rid ? { restaurantId: rid } : {})
             }
         });
         res.json(product);
@@ -326,6 +350,7 @@ app.delete('/products/:id', async (req, res) => {
         await prisma.product.delete({ where: { id: Number(id) } });
         res.json({ success: true });
     } catch (error) {
+        console.error("ERRO DETALHADO AO DELETAR PRODUTO:", error);
         res.status(500).json({ error: 'Erro ao deletar produto' });
     }
 });
@@ -333,15 +358,20 @@ app.delete('/products/:id', async (req, res) => {
 // --- ROTAS DE CATEGORIAS ---
 
 app.get('/categories', async (req, res) => {
-    const categories = await prisma.category.findMany({ include: { _count: { select: { products: true } } } });
+    const rid = req.query.rid ? Number(req.query.rid) : undefined;
+    const categories = await prisma.category.findMany({
+        where: rid ? { restaurantId: rid } : {},
+        include: { _count: { select: { products: true } } }
+    });
     res.json(categories);
 });
 
 app.post('/categories', async (req, res) => {
-    const { name, kitchen } = req.body;
+    const { name, kitchen, restaurantId } = req.body;
+    const rid = restaurantId ? Number(restaurantId) : undefined;
     try {
         const category = await prisma.category.create({
-            data: { name, kitchen }
+            data: { name, kitchen, ...(rid ? { restaurantId: rid } : {}) }
         });
         res.json(category);
     } catch (error) {
@@ -364,15 +394,15 @@ app.delete('/categories/:id', async (req, res) => {
 
 // 1. Listar pedidos da cozinha (Não entregues)
 app.get('/kitchen/orders', async (req, res) => {
+    const rid = req.query.rid ? Number(req.query.rid) : undefined;
     try {
         const orders = await prisma.order.findMany({
             where: {
-                kitchenStatus: { not: 'DELIVERED' }, // Traz tudo que não foi entregue
-                status: { not: 'Cancelado' } // Ignora cancelados
+                kitchenStatus: { not: 'DELIVERED' },
+                status: { not: 'Cancelado' },
+                ...(rid ? { restaurantId: rid } : {})
             },
-            include: {
-                items: { include: { product: true } }
-            },
+            include: { items: { include: { product: true } } },
             orderBy: { createdAt: 'asc' }
         });
         res.json(orders);
@@ -401,21 +431,16 @@ app.patch('/kitchen/orders/:id/status', async (req, res) => {
 
 // 1. KPI (Receita, Despesas, Lucro)
 app.get('/financial/kpi', async (req, res) => {
+    const rid = req.query.rid ? Number(req.query.rid) : undefined;
     try {
-        // Receita: Soma de todos os pedidos finalizados (ou pagos)
         const orders = await prisma.order.findMany({
-            where: { status: 'CONCLUIDO' }
+            where: { status: 'CONCLUIDO', ...(rid ? { restaurantId: rid } : {}) }
         });
         const revenue = orders.reduce((acc, order) => acc + (order.total || 0), 0);
 
-        // Despesas: Soma de todas as despesas
         const expensesData = await prisma.expense.findMany();
         const expenses = expensesData.reduce((acc, exp) => acc + exp.amount, 0);
-
-        // Lucro
         const profit = revenue - expenses;
-
-        // Margem
         const margin = revenue > 0 ? ((profit / revenue) * 100).toFixed(2) : 0;
 
         res.json({ revenue, expenses, profit, margin });
@@ -424,26 +449,20 @@ app.get('/financial/kpi', async (req, res) => {
     }
 });
 
-// 2. Evolução Mensal (Últimos 6 meses)
 app.get('/financial/evolution', async (req, res) => {
+    const rid = req.query.rid ? Number(req.query.rid) : undefined;
     try {
         const today = new Date();
         const sixMonthsAgo = new Date(today.getFullYear(), today.getMonth() - 5, 1);
 
         const orders = await prisma.order.findMany({
-            where: {
-                status: 'CONCLUIDO',
-                createdAt: { gte: sixMonthsAgo }
-            }
+            where: { status: 'CONCLUIDO', createdAt: { gte: sixMonthsAgo }, ...(rid ? { restaurantId: rid } : {}) }
         });
 
         const expenses = await prisma.expense.findMany({
-            where: {
-                createdAt: { gte: sixMonthsAgo } // Ou dueDate? Vamos usar createdAt por enquanto
-            }
+            where: { createdAt: { gte: sixMonthsAgo } }
         });
 
-        // Agrupar por mês
         const months = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
         const result = [];
 
@@ -451,24 +470,17 @@ app.get('/financial/evolution', async (req, res) => {
             const d = new Date(today.getFullYear(), today.getMonth() - 5 + i, 1);
             const monthName = months[d.getMonth()];
 
-            // Filtra pedidos do mês
             const monthOrders = orders.filter(o =>
                 o.createdAt.getMonth() === d.getMonth() && o.createdAt.getFullYear() === d.getFullYear()
             );
             const receita = monthOrders.reduce((acc, o) => acc + o.total, 0);
 
-            // Filtra despesas do mês
             const monthExpenses = expenses.filter(e =>
                 e.createdAt.getMonth() === d.getMonth() && e.createdAt.getFullYear() === d.getFullYear()
             );
             const despesas = monthExpenses.reduce((acc, e) => acc + e.amount, 0);
 
-            result.push({
-                name: monthName,
-                receita,
-                despesas,
-                lucro: receita - despesas
-            });
+            result.push({ name: monthName, receita, despesas, lucro: receita - despesas });
         }
 
         res.json(result);
@@ -648,6 +660,70 @@ app.post('/restaurants', async (req, res) => {
     }
 });
 
-app.listen(3001, () => {
-    console.log('✅ Servidor PDV rodando na porta 3001');
+// --- ROTAS: MÉTODOS DE PAGAMENTO ---
+
+app.get('/payments', async (req, res) => {
+    const rid = req.query.rid ? Number(req.query.rid) : undefined;
+    try {
+        const methods = await prisma.paymentMethod.findMany({
+            where: rid ? { restaurantId: rid } : {}
+        });
+        res.json(methods);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao buscar métodos de pagamento' });
+    }
 });
+
+app.post('/payments', async (req, res) => {
+    const { name, type, active } = req.body;
+    try {
+        const restaurante = await prisma.restaurant.findFirst();
+
+        const method = await prisma.paymentMethod.create({
+            data: {
+                name,
+                type: type || 'OTHER',
+                active: active !== undefined ? active : true,
+                restaurantId: restaurante?.id || null
+            }
+        });
+        res.json(method);
+    } catch (error) {
+        console.error("ERRO NO CREATE PAYMENT", error);
+        res.status(500).json({ error: 'Erro ao criar método de pagamento' });
+    }
+});
+
+app.put('/payments/:id', async (req, res) => {
+    const { id } = req.params;
+    const { active } = req.body;
+    try {
+        const method = await prisma.paymentMethod.update({
+            where: { id: Number(id) },
+            data: { active }
+        });
+        res.json(method);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao atualizar método de pagamento' });
+    }
+});
+
+app.delete('/payments/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await prisma.paymentMethod.delete({ where: { id: Number(id) } });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao deletar método' });
+    }
+});
+
+// Se estivermos rodando no seu computador (ambiente local), ele usa a porta 3001
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(3001, () => {
+        console.log('✅ Servidor PDV rodando na porta 3001');
+    });
+}
+
+// Exportamos o 'app' para a Vercel poder usar no modo Serverless
+export default app;

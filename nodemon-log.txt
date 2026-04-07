@@ -1,0 +1,24 @@
+﻿**********************
+Início da transcrição do Windows PowerShell
+Hora de início: 20260306220132
+Nome de Usuário: SAMSUN-BOOK-2\Douglas
+Executar como Usuário: SAMSUN-BOOK-2\Douglas
+Nome da Configuração: 
+Computador: SAMSUN-BOOK-2 (Microsoft Windows NT 10.0.26200.0)
+Aplicativo Host: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -noexit -command try { . "c:\Users\Douglas\AppData\Local\Programs\Antigravity\resources\app\out\vs\workbench\contrib\terminal\common\scripts\shellIntegration.ps1" } catch {}
+ID do Processo: 11212
+PSVersion: 5.1.26100.7920
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.7920
+BuildVersion: 10.0.26100.7920
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcrição iniciada, o arquivo de saída é C:\Projetos\pdv yeshua\backend\nodemon-log.txt
+
+**********************
+Fim da transcrição do Windows PowerShell
+Hora de término: 20260306220136
+**********************
