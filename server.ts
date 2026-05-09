@@ -9,6 +9,12 @@ const prisma = new PrismaClient();
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
+// Log de requisições para debug
+app.use((req, res, next) => {
+    console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${req.url}`);
+    next();
+});
+
 const JWT_SECRET = "chave_secreta_super_segura_pdv"; // Em produção, vai no .env
 
 // ROTA DE LOGIN
@@ -75,7 +81,30 @@ app.get('/cashier/status', async (req, res) => {
 
         if (!cashier) return res.json(null);
 
-        const totalSales = cashier.orders.reduce((acc, order) => acc + order.total, 0);
+        let orders = cashier.orders;
+
+        // Filtro por Jornada (Opcional)
+        const { start, end } = req.query;
+        if (start && end) {
+            orders = orders.filter(o => {
+                const time = o.createdAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', hour12: false });
+                const [h, m] = time.split(':').map(Number);
+                const [sh, sm] = (start as string).split(':').map(Number);
+                const [eh, em] = (end as string).split(':').map(Number);
+
+                const orderMins = h * 60 + m;
+                const startMins = sh * 60 + sm;
+                const endMins = eh * 60 + em;
+
+                if (startMins <= endMins) {
+                    return orderMins >= startMins && orderMins <= endMins;
+                } else {
+                    return orderMins >= startMins || orderMins <= endMins;
+                }
+            });
+        }
+
+        const totalSales = orders.reduce((acc, order) => acc + order.total, 0);
         res.json({ ...cashier, totalSales });
     } catch (error) {
         res.status(500).json({ error: 'Erro ao buscar status' });
@@ -115,20 +144,129 @@ app.post('/cashier/open', async (req, res) => {
 
 // 4. Fechar Caixa
 app.post('/cashier/close', async (req, res) => {
-    const { cashierId, finalVal } = req.body;
+    const { cashierId, finalVal, finalCash, finalPix, finalCard } = req.body;
 
     const closedCashier = await prisma.cashier.update({
         where: { id: cashierId },
         data: {
             status: 'Fechado',
             closedAt: new Date(),
-            finalVal: parseFloat(finalVal)
+            finalVal: parseFloat(finalVal),
+            finalCash: parseFloat(finalCash || 0),
+            finalPix: parseFloat(finalPix || 0),
+            finalCard: parseFloat(finalCard || 0)
         }
     });
     res.json(closedCashier);
 });
 
-// 5. Listar Vendas do Caixa Atual (Abertas e Fechadas)
+// 4.1 Pegar Relatório Detalhado do Caixa
+app.get('/cashier/:id/report', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const cashier = await prisma.cashier.findUnique({
+            where: { id: Number(id) },
+            include: { orders: true }
+        });
+
+        if (!cashier) return res.status(404).json({ error: 'Caixa não encontrado' });
+
+        const systemData = cashier.orders.reduce((acc, o) => {
+            acc.totalSales += o.total;
+            acc.totalTips += o.tip;
+            acc.expectedCash += (o.paidCash - o.change);
+            acc.expectedPix += o.paidPix;
+            acc.expectedCard += o.paidCard;
+            return acc;
+        }, { totalSales: 0, totalTips: 0, expectedCash: 0, expectedPix: 0, expectedCard: 0 });
+
+        // Adiciona fundo inicial ao dinheiro esperado
+        systemData.expectedCash += cashier.initialVal;
+
+        res.json({
+            cashier,
+            system: systemData
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao buscar relatório' });
+    }
+});
+
+// 5. Buscar gorjetas do Caixa Atual
+app.get('/cashier/tips', async (req, res) => {
+    const rid = req.query.rid ? Number(req.query.rid) : undefined;
+    try {
+        const openCashier = await prisma.cashier.findFirst({
+            where: { status: 'Aberto', ...(rid ? { restaurantId: rid } : {}) }
+        });
+
+        if (!openCashier) {
+            return res.json({ total: 0, byWaiter: [] });
+        }
+
+        // Busca todas as ordens finalizadas neste caixa que tenham gorjeta > 0
+        let orders = await prisma.order.findMany({
+            where: { 
+                cashierId: openCashier.id,
+                status: 'CONCLUIDO',
+                tip: { gt: 0 }
+            }
+        });
+
+        // Filtro por Jornada (Opcional)
+        const { start, end } = req.query;
+        if (start && end) {
+            orders = orders.filter(o => {
+                const time = o.createdAt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', hour12: false });
+                const [h, m] = time.split(':').map(Number);
+                const [sh, sm] = (start as string).split(':').map(Number);
+                const [eh, em] = (end as string).split(':').map(Number);
+
+                const orderMins = h * 60 + m;
+                const startMins = sh * 60 + sm;
+                const endMins = eh * 60 + em;
+
+                if (startMins <= endMins) {
+                    return orderMins >= startMins && orderMins <= endMins;
+                } else {
+                    // Turno da noite (atravessa meia noite)
+                    return orderMins >= startMins || orderMins <= endMins;
+                }
+            });
+        }
+
+        let total = 0;
+        const tipsMap: Record<string, number> = {};
+
+        // Agrupa por waiterId
+        orders.forEach(order => {
+            total += order.tip;
+            const wId = order.waiterId || 'sem_garcom';
+            tipsMap[wId] = (tipsMap[wId] || 0) + order.tip;
+        });
+
+        // Busca os nomes dos garçons
+        const byWaiter = [];
+        for (const [wId, amount] of Object.entries(tipsMap)) {
+            let name = "Não identificado";
+            if (wId !== 'sem_garcom') {
+                const user = await prisma.user.findUnique({ where: { id: Number(wId) } });
+                if (user) name = user.name;
+            }
+            byWaiter.push({ waiterId: wId, name, amount });
+        }
+
+        // Ordena por maior valor
+        byWaiter.sort((a, b) => b.amount - a.amount);
+
+        res.json({ total, byWaiter });
+    } catch (e) {
+        console.error("Erro ao buscar gorjetas:", e);
+        res.status(500).json({ error: 'Erro ao buscar gorjetas' });
+    }
+});
+
+// 6. Listar Vendas do Caixa Atual (Abertas e Fechadas)
 app.get('/cashier/active-sales', async (req, res) => {
     const rid = req.query.rid ? Number(req.query.rid) : undefined;
     try {
@@ -239,6 +377,16 @@ app.post('/orders', async (req, res) => {
             }
         }
 
+        // --- AUTOMAÇÃO: Criar solicitação de impressão para o Electron ---
+        await prisma.printRequest.create({
+            data: {
+                tableNum: Number(tableNum),
+                orderId: order.id,
+                status: 'pending'
+            }
+        });
+        console.log(`[PRINT] Solicitação criada para Mesa ${tableNum} (Pedido ${order.id})`);
+
         res.json(order);
     } catch (error) {
         console.error("ERRO NO CREATE ORDER:", error);
@@ -248,8 +396,10 @@ app.post('/orders', async (req, res) => {
 
 // --- ROTA: FECHAR MESA (PAGAMENTO) ---
 app.post('/orders/close', async (req, res) => {
-    const { tableNum, paidCash, paidPix, paidCard, change, restaurantId } = req.body;
+    const { tableNum, paidCash, paidPix, paidCard, change, restaurantId, tip } = req.body;
     const rid = restaurantId ? Number(restaurantId) : undefined;
+
+    console.log(`[CLOSE_ORDER] Solicitado fechamento Mesa ${tableNum} (Restaurante: ${rid})`);
 
     try {
         // 1. Procura o Caixa que está ABERTO no momento
@@ -257,20 +407,21 @@ app.post('/orders/close', async (req, res) => {
             where: { status: 'Aberto', ...(rid ? { restaurantId: rid } : {}) }
         });
 
+        if (!openCashier) {
+            console.warn(`[CLOSE_ORDER] Tentativa de fechar mesa sem caixa aberto!`);
+            return res.status(400).json({ error: 'Não há um caixa aberto para registrar o pagamento.' });
+        }
+
         // 2. Encontra TODOS os pedidos pendentes da mesa
         const orders = await prisma.order.findMany({
             where: { tableNum: Number(tableNum), status: 'PENDENTE', ...(rid ? { restaurantId: rid } : {}) }
         });
 
-        if (orders.length === 0) return res.status(400).json({ error: 'Nenhum pedido encontrado para esta mesa.' });
+        console.log(`[CLOSE_ORDER] Encontrados ${orders.length} pedidos pendentes para a mesa ${tableNum}`);
 
-        // 3. Atualiza TODOS: Muda status, Vincula ao Caixa e Salva valores
-        // Como temos múltiplos pedidos, vamos dividir o pagamento proporcionalmente ou jogar tudo no primeiro?
-        // Vamos jogar os valores de pagamento no PRIMEIRO pedido e zerar os outros para não duplicar faturamento no relatório.
-        // Ou melhor: criar um "Pedido de Fechamento"? Não, vamos marcar todos como CONCLUIDO.
-
-        // Estratégia: Atualizar todos para CONCLUIDO.
-        // O pagamento (paidCash, etc) será registrado apenas no ÚLTIMO pedido (ou primeiro), para não somar errado depois.
+        if (orders.length === 0) {
+            return res.status(400).json({ error: 'Nenhum pedido encontrado para esta mesa.' });
+        }
 
         const lastOrderId = orders[orders.length - 1].id;
 
@@ -279,27 +430,84 @@ app.post('/orders/close', async (req, res) => {
             where: { tableNum: Number(tableNum), status: 'PENDENTE', ...(rid ? { restaurantId: rid } : {}) },
             data: {
                 status: 'CONCLUIDO',
-                cashierId: openCashier ? openCashier.id : null,
-                kitchenStatus: 'DELIVERED' // Se fechou a mesa, assume que entregou tudo? Ou deixa como está? Vamos forçar entregue.
+                cashierId: openCashier.id,
+                kitchenStatus: 'DELIVERED'
             }
         });
 
-        // Atualiza apenas o último com os valores do pagamento (para o relatório financeiro bater)
         const updatedOrder = await prisma.order.update({
             where: { id: lastOrderId },
             data: {
                 paidCash: parseFloat(paidCash || 0),
                 paidPix: parseFloat(paidPix || 0),
                 paidCard: parseFloat(paidCard || 0),
-                change: parseFloat(change || 0)
+                change: parseFloat(change || 0),
+                tip: parseFloat(tip || 0)
             }
         });
 
+        console.log(`[CLOSE_ORDER] Mesa ${tableNum} fechada com sucesso! Order ID: ${lastOrderId}`);
         res.json(updatedOrder);
 
     } catch (error) {
-        console.error("Erro ao fechar mesa:", error);
-        res.status(500).json({ error: 'Erro interno ao fechar mesa' });
+        console.error("[CLOSE_ORDER] Erro crítico ao fechar mesa:", error);
+        res.status(500).json({ error: 'Erro interno ao fechar mesa', details: String(error) });
+    }
+});
+
+// --- ROTA: PEDIR CONTA (Imprimir) ---
+app.post('/print-requests', async (req, res) => {
+    const { tableNum, orderId } = req.body;
+    try {
+        const reqBill = await prisma.printRequest.create({
+            data: { tableNum: Number(tableNum), orderId: Number(orderId), status: 'pending' }
+        });
+        res.json(reqBill);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Erro interno ao enviar pedido para a printer' });
+    }
+});
+
+// --- ROTA: ATUALIZAR STATUS DA IMPRESSÃO ---
+app.patch('/print-requests/:id', async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+    try {
+        const updated = await prisma.printRequest.update({
+            where: { id: Number(id) },
+            data: { status }
+        });
+        res.json(updated);
+    } catch (e) {
+        res.status(500).json({ error: 'Erro ao atualizar status de impressão' });
+    }
+});
+
+// --- ROTA: BUSCAR UM PEDIDO ESPECÍFICO ---
+app.get('/orders/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const order = await prisma.order.findUnique({
+            where: { id: Number(id) },
+            include: { items: { include: { product: true } } }
+        });
+        
+        if (!order) return res.status(404).json({ error: 'Pedido não encontrado' });
+
+        // Busca o nome do garçom se houver waiterId
+        let waiterName = "Não informado";
+        if (order.waiterId) {
+            const waiter = await prisma.user.findUnique({
+                where: { id: Number(order.waiterId) }
+            });
+            if (waiter) waiterName = waiter.name;
+        }
+
+        res.json({ ...order, waiterName });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Erro ao buscar pedido' });
     }
 });
 
@@ -718,12 +926,65 @@ app.delete('/payments/:id', async (req, res) => {
     }
 });
 
+// --- ROTAS DE JORNADAS (SHIFTS) ---
+
+app.get('/shifts', async (req, res) => {
+    const rid = req.query.rid ? Number(req.query.rid) : undefined;
+    try {
+        const shifts = await prisma.shift.findMany({
+            where: rid ? { restaurantId: rid } : {}
+        });
+        res.json(shifts);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao buscar jornadas' });
+    }
+});
+
+app.post('/shifts', async (req, res) => {
+    const { name, startTime, endTime, restaurantId } = req.body;
+    try {
+        const shift = await prisma.shift.create({
+            data: {
+                name,
+                startTime,
+                endTime,
+                restaurantId: restaurantId ? Number(restaurantId) : null
+            }
+        });
+        res.json(shift);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao criar jornada' });
+    }
+});
+
+app.put('/shifts/:id', async (req, res) => {
+    const { id } = req.params;
+    const { name, startTime, endTime } = req.body;
+    try {
+        const shift = await prisma.shift.update({
+            where: { id: Number(id) },
+            data: { name, startTime, endTime }
+        });
+        res.json(shift);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao atualizar jornada' });
+    }
+});
+
+app.delete('/shifts/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await prisma.shift.delete({ where: { id: Number(id) } });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao deletar jornada' });
+    }
+});
+
 // Se estivermos rodando no seu computador (ambiente local), ele usa a porta 3001
-if (process.env.NODE_ENV !== 'production') {
-    app.listen(3001, () => {
-        console.log('✅ Servidor PDV rodando na porta 3001');
+    app.listen(3001, '0.0.0.0', () => {
+        console.log('✅ Servidor PDV rodando em http://localhost:3001');
     });
-}
 
 // Exportamos o 'app' para a Vercel poder usar no modo Serverless
 export default app;

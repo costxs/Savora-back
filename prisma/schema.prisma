@@ -19,7 +19,32 @@ model Restaurant {
   orders     Order[]
   cashiers   Cashier[]
   kitchens   Kitchen[]
+  tables     Table[]
   paymentMethods PaymentMethod[]
+  shifts     Shift[]
+}
+
+model Shift {
+  id           Int        @id @default(autoincrement())
+  name         String
+  startTime    String     // Format "HH:mm"
+  endTime      String     // Format "HH:mm"
+  restaurantId Int?
+  restaurant   Restaurant? @relation(fields: [restaurantId], references: [id])
+}
+
+model Table {
+  id           Int        @id @default(autoincrement())
+  number       Int
+  zone         String     @default("Salão Principal")
+  status       String     @default("free") // free, occupied, billing
+  shape        String     @default("square")
+
+  restaurantId Int
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  orders       Order[]
+
+  @@unique([number, restaurantId])
 }
 
 model User {
@@ -41,6 +66,9 @@ model Cashier {
   closedAt   DateTime?
   initialVal Float
   finalVal   Float?
+  finalCash  Float?
+  finalPix   Float?
+  finalCard  Float?
   status     String    @default("Aberto")
   operator   String
   orders     Order[]
@@ -63,10 +91,14 @@ model Order {
   paidPix  Float @default(0.0)
   paidCard Float @default(0.0)
   change   Float @default(0.0)
+  tip      Float @default(0.0)
 
   cashierId Int?
   cashier   Cashier?    @relation(fields: [cashierId], references: [id])
   items     OrderItem[]
+
+  tableId      Int?
+  table        Table?      @relation(fields: [tableId], references: [id])
 
   restaurantId Int?
   restaurant   Restaurant? @relation(fields: [restaurantId], references: [id])
@@ -133,4 +165,12 @@ model Expense {
   status      String   @default("PENDING")
   category    String   @default("OPERATIONAL")
   createdAt   DateTime @default(now())
+}
+
+model PrintRequest {
+  id        Int      @id @default(autoincrement())
+  tableNum  Int
+  orderId   Int
+  status    String   @default("pending") // pending, printed, failed
+  createdAt DateTime @default(now())
 }
