@@ -64,7 +64,8 @@ app.post('/login', async (req, res) => {
         });
 
     } catch (error) {
-        res.status(500).json({ error: 'Erro no servidor' });
+        console.error("ERRO NO LOGIN:", error);
+        res.status(500).json({ error: 'Erro no servidor', details: String(error) });
     }
 });
 
@@ -206,7 +207,7 @@ app.get('/cashier/tips', async (req, res) => {
 
         // Busca todas as ordens finalizadas neste caixa que tenham gorjeta > 0
         let orders = await prisma.order.findMany({
-            where: { 
+            where: {
                 cashierId: openCashier.id,
                 status: 'CONCLUIDO',
                 tip: { gt: 0 }
@@ -247,11 +248,20 @@ app.get('/cashier/tips', async (req, res) => {
 
         // Busca os nomes dos garçons
         const byWaiter = [];
+        const waiterIds = Object.keys(tipsMap).filter(id => id !== 'sem_garcom').map(Number);
+        
+        const users = await prisma.user.findMany({
+            where: { id: { in: waiterIds } },
+            select: { id: true, name: true }
+        });
+        const usersMap = Object.fromEntries(users.map(u => [u.id, u.name]));
+
         for (const [wId, amount] of Object.entries(tipsMap)) {
             let name = "Não identificado";
-            if (wId !== 'sem_garcom') {
-                const user = await prisma.user.findUnique({ where: { id: Number(wId) } });
-                if (user) name = user.name;
+            if (wId === 'sem_garcom') {
+                name = "Sem garçom";
+            } else {
+                name = usersMap[Number(wId)] || "Não identificado";
             }
             byWaiter.push({ waiterId: wId, name, amount });
         }
@@ -492,7 +502,7 @@ app.get('/orders/:id', async (req, res) => {
             where: { id: Number(id) },
             include: { items: { include: { product: true } } }
         });
-        
+
         if (!order) return res.status(404).json({ error: 'Pedido não encontrado' });
 
         // Busca o nome do garçom se houver waiterId
@@ -641,13 +651,16 @@ app.patch('/kitchen/orders/:id/status', async (req, res) => {
 app.get('/financial/kpi', async (req, res) => {
     const rid = req.query.rid ? Number(req.query.rid) : undefined;
     try {
-        const orders = await prisma.order.findMany({
+        const aggregate = await prisma.order.aggregate({
+            _sum: { total: true },
             where: { status: 'CONCLUIDO', ...(rid ? { restaurantId: rid } : {}) }
         });
-        const revenue = orders.reduce((acc, order) => acc + (order.total || 0), 0);
+        const revenue = aggregate._sum.total || 0;
 
-        const expensesData = await prisma.expense.findMany();
-        const expenses = expensesData.reduce((acc, exp) => acc + exp.amount, 0);
+        const expensesAggregate = await prisma.expense.aggregate({
+            _sum: { amount: true }
+        });
+        const expenses = expensesAggregate._sum.amount || 0;
         const profit = revenue - expenses;
         const margin = revenue > 0 ? ((profit / revenue) * 100).toFixed(2) : 0;
 
@@ -982,9 +995,9 @@ app.delete('/shifts/:id', async (req, res) => {
 });
 
 // Se estivermos rodando no seu computador (ambiente local), ele usa a porta 3001
-    app.listen(3001, '0.0.0.0', () => {
-        console.log('✅ Servidor PDV rodando em http://localhost:3001');
-    });
+app.listen(3001, '0.0.0.0', () => {
+    console.log('✅ Servidor PDV rodando em http://localhost:3001');
+});
 
 // Exportamos o 'app' para a Vercel poder usar no modo Serverless
 export default app;
