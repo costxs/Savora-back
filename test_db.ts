@@ -7,7 +7,7 @@ async function main() {
         where: { status: 'PENDENTE' },
         include: { items: true }
     });
-    console.log('Pending Orders Count:', pendingOrders.length);,,
+    console.log('Pending Orders Count:', pendingOrders.length);
     console.log('Orders:', JSON.stringify(pendingOrders, null, 2));
 }
 
