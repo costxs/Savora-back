@@ -358,21 +358,32 @@ app.post('/admin/migrate-restaurant-data', async (req, res) => {
 
 // --- ROTA: SALVAR/ATUALIZAR PEDIDO DA MESA ---
 app.post('/orders', async (req, res) => {
-    const { tableNum, items, total, clientName, waiterId, restaurantId } = req.body;
+    const { orderId, tableNum, items, total, clientName, waiterId, restaurantId } = req.body;
     const rid = restaurantId ? Number(restaurantId) : undefined;
 
     try {
-        const order = await prisma.order.create({
-            data: {
-                tableNum: Number(tableNum),
-                total: parseFloat(total),
-                clientName: clientName || `Mesa ${tableNum}`,
-                status: 'PENDENTE',
-                kitchenStatus: 'PENDING',
-                waiterId: waiterId ? String(waiterId) : null,
-                ...(rid ? { restaurantId: rid } : {})
-            }
-        });
+        let order;
+
+        if (orderId) {
+            order = await prisma.order.update({
+                where: { id: Number(orderId) },
+                data: {
+                    total: { increment: parseFloat(total) }
+                }
+            });
+        } else {
+            order = await prisma.order.create({
+                data: {
+                    tableNum: Number(tableNum),
+                    total: parseFloat(total),
+                    clientName: clientName || `Mesa ${tableNum}`,
+                    status: 'PENDENTE',
+                    kitchenStatus: 'PENDING',
+                    waiterId: waiterId ? String(waiterId) : null,
+                    ...(rid ? { restaurantId: rid } : {})
+                }
+            });
+        }
 
         if (items && items.length > 0) {
             for (const item of items) {
