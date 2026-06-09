@@ -3,14 +3,14 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main() {
-    const pendingOrders = await prisma.order.findMany({
-        where: { status: 'PENDENTE' },
-        include: { items: true }
+    const cashiers = await prisma.cashier.findMany({
+        orderBy: { openedAt: 'desc' },
+        take: 10
     });
-    console.log('Pending Orders Count:', pendingOrders.length);
-    console.log('Orders:', JSON.stringify(pendingOrders, null, 2));
+    console.log('Cashiers:', JSON.stringify(cashiers, null, 2));
 }
 
 main()
     .catch(e => console.error(e))
     .finally(async () => await prisma.$disconnect());
+

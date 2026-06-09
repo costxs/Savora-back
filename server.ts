@@ -476,6 +476,93 @@ app.post('/orders/close', async (req, res) => {
     }
 });
 
+// --- ROTA: PAGAMENTO PARCIAL OU TOTAL ---
+app.post('/orders/pay', async (req, res) => {
+    const { tableNum, paidCash, paidPix, paidCard, tip, restaurantId } = req.body;
+    const rid = restaurantId ? Number(restaurantId) : undefined;
+
+    console.log(`[PAY_ORDER] Pagamento recebido para Mesa ${tableNum}. Cash: ${paidCash}, Pix: ${paidPix}, Card: ${paidCard}, Tip: ${tip}`);
+
+    try {
+        // 1. Procura o Caixa que está ABERTO no momento
+        const openCashier = await prisma.cashier.findFirst({
+            where: { status: 'Aberto', ...(rid ? { restaurantId: rid } : {}) }
+        });
+
+        if (!openCashier) {
+            return res.status(400).json({ error: 'Não há um caixa aberto para registrar o pagamento.' });
+        }
+
+        // 2. Encontra TODOS os pedidos pendentes da mesa
+        const orders = await prisma.order.findMany({
+            where: { tableNum: Number(tableNum), status: 'PENDENTE', ...(rid ? { restaurantId: rid } : {}) }
+        });
+
+        if (orders.length === 0) {
+            return res.status(400).json({ error: 'Nenhum pedido aberto encontrado para esta mesa.' });
+        }
+
+        const lastOrderId = orders[orders.length - 1].id;
+
+        // 3. Atualiza os valores pagos e gorjeta incrementando os existentes na última ordem
+        const lastOrder = orders[orders.length - 1];
+        const newPaidCash = lastOrder.paidCash + parseFloat(paidCash || 0);
+        const newPaidPix = lastOrder.paidPix + parseFloat(paidPix || 0);
+        const newPaidCard = lastOrder.paidCard + parseFloat(paidCard || 0);
+        const newTip = lastOrder.tip + parseFloat(tip || 0);
+
+        // Calcula o total acumulado da mesa
+        const totalTableBill = orders.reduce((acc, o) => acc + o.total, 0);
+        const totalPaidSoFar = newPaidCash + newPaidPix + newPaidCard;
+
+        // Verifica se a conta foi totalmente paga
+        const isFullyPaid = Math.round((totalPaidSoFar - totalTableBill) * 100) >= 0;
+
+        let updatedOrder;
+
+        if (isFullyPaid) {
+            // Se quitado, atualiza todas as ordens da mesa para CONCLUIDO
+            await prisma.order.updateMany({
+                where: { tableNum: Number(tableNum), status: 'PENDENTE', ...(rid ? { restaurantId: rid } : {}) },
+                data: {
+                    status: 'CONCLUIDO',
+                    cashierId: openCashier.id,
+                    kitchenStatus: 'DELIVERED'
+                }
+            });
+
+            updatedOrder = await prisma.order.update({
+                where: { id: lastOrderId },
+                data: {
+                    paidCash: newPaidCash,
+                    paidPix: newPaidPix,
+                    paidCard: newPaidCard,
+                    tip: newTip
+                }
+            });
+        } else {
+            // Pagamento parcial: vincula ao caixa, mas mantém o status PENDENTE
+            updatedOrder = await prisma.order.update({
+                where: { id: lastOrderId },
+                data: {
+                    paidCash: newPaidCash,
+                    paidPix: newPaidPix,
+                    paidCard: newPaidCard,
+                    tip: newTip,
+                    cashierId: openCashier.id
+                }
+            });
+        }
+
+        console.log(`[PAY_ORDER] Pagamento registrado na Mesa ${tableNum}. Concluído: ${isFullyPaid}`);
+        res.json({ order: updatedOrder, isFullyPaid });
+
+    } catch (error) {
+        console.error("[PAY_ORDER] Erro ao registrar pagamento:", error);
+        res.status(500).json({ error: 'Erro interno ao registrar pagamento', details: String(error) });
+    }
+});
+
 // --- ROTA: PEDIR CONTA (Imprimir) ---
 app.post('/print-requests', async (req, res) => {
     const { tableNum, orderId } = req.body;
