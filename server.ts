@@ -565,11 +565,20 @@ app.post('/orders/pay', async (req, res) => {
 
 // --- ROTA: PEDIR CONTA (Imprimir) ---
 app.post('/print-requests', async (req, res) => {
-    const { tableNum, orderId } = req.body;
+    const { tableNum, orderId, type } = req.body;
     try {
+        const status = type === 'bill' ? 'pending_bill' : 'pending';
         const reqBill = await prisma.printRequest.create({
-            data: { tableNum: Number(tableNum), orderId: Number(orderId), status: 'pending' }
+            data: { tableNum: Number(tableNum), orderId: Number(orderId), status }
         });
+
+        // Se for fechamento de mesa, atualiza o status da mesa para 'billing'
+        if (type === 'bill') {
+            await prisma.table.updateMany({
+                where: { number: Number(tableNum) },
+                data: { status: 'billing' }
+            });
+        }
         res.json(reqBill);
     } catch (e) {
         console.error(e);
