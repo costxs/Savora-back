@@ -725,6 +725,19 @@ app.delete('/products/:id', async (req, res) => {
     }
 });
 
+// --- ROTAS DE PAGAMENTO ---
+app.get('/payments', async (req, res) => {
+    const rid = req.query.rid ? Number(req.query.rid) : undefined;
+    try {
+        const methods = await prisma.paymentMethod.findMany({
+            where: rid ? { restaurantId: rid } : {}
+        });
+        res.json(methods);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao buscar métodos de pagamento' });
+    }
+});
+
 // --- ROTAS DE CATEGORIAS ---
 
 app.get('/categories', async (req, res) => {
