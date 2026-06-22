@@ -2,8 +2,11 @@ FROM node:18-alpine
 
 WORKDIR /app
 
+RUN apk add --no-cache openssl
+
 # Copy package files
 COPY package*.json ./
+COPY prisma ./prisma/
 
 # Install dependencies and generate Prisma client
 RUN npm install
@@ -11,7 +14,6 @@ RUN npm install
 # Copy source code and Prisma schema
 COPY . .
 
-# Generate Prisma client
 RUN npx prisma generate
 
 # Build TypeScript

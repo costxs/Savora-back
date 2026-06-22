@@ -406,7 +406,7 @@ app.post('/orders', async (req, res) => {
         }
 
         if (orderId || existingOrder) {
-            const idToUpdate = orderId ? Number(orderId) : existingOrder.id;
+            const idToUpdate = orderId ? Number(orderId) : existingOrder!.id;
             order = await prisma.order.update({
                 where: { id: idToUpdate },
                 data: {
