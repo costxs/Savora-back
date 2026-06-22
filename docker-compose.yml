@@ -6,4 +6,7 @@ services:
     container_name: yeshua-backend
     ports:
       - "3001:3001"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - DIRECT_URL=${DIRECT_URL}
     restart: unless-stopped
