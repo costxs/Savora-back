@@ -331,7 +331,37 @@ app.get('/orders/open', async (req, res) => {
     const filtered = rid
         ? openOrders.filter(o => o.restaurantId === null || o.restaurantId === rid)
         : openOrders;
-    res.json(filtered);
+
+    // Group and merge orders by tableNum to handle potential duplicate PENDENTE orders per table
+    const mergedOrdersMap: Record<number, any> = {};
+    for (const order of filtered) {
+        const tNum = order.tableNum;
+        if (!tNum) continue;
+        if (!mergedOrdersMap[tNum]) {
+            mergedOrdersMap[tNum] = {
+                ...order,
+                items: [...order.items]
+            };
+        } else {
+            const existing = mergedOrdersMap[tNum];
+            existing.total += order.total;
+            existing.paidCash += order.paidCash;
+            existing.paidPix += order.paidPix;
+            existing.paidCard += order.paidCard;
+            existing.change += order.change;
+            existing.tip += order.tip;
+            existing.items.push(...order.items);
+            if (order.id > existing.id) {
+                existing.id = order.id;
+                existing.createdAt = order.createdAt;
+                existing.clientName = order.clientName || existing.clientName;
+                existing.waiterId = order.waiterId || existing.waiterId;
+                existing.kitchenStatus = order.kitchenStatus;
+            }
+        }
+    }
+    const mergedOrders = Object.values(mergedOrdersMap);
+    res.json(mergedOrders);
 });
 
 // --- ROTA: MIGRAR DADOS LEGADOS (Atribuir restaurantId aos registros antigos) ---
@@ -358,17 +388,30 @@ app.post('/admin/migrate-restaurant-data', async (req, res) => {
 
 // --- ROTA: SALVAR/ATUALIZAR PEDIDO DA MESA ---
 app.post('/orders', async (req, res) => {
-    const { orderId, tableNum, items, total, clientName, waiterId, restaurantId } = req.body;
+    const { orderId, tableNum, items, total, clientName, waiterId, restaurantId, skipPrint } = req.body;
     const rid = restaurantId ? Number(restaurantId) : undefined;
 
     try {
         let order;
 
-        if (orderId) {
+        let existingOrder = null;
+        if (!orderId) {
+            existingOrder = await prisma.order.findFirst({
+                where: {
+                    tableNum: Number(tableNum),
+                    status: 'PENDENTE',
+                    ...(rid ? { restaurantId: rid } : {})
+                }
+            });
+        }
+
+        if (orderId || existingOrder) {
+            const idToUpdate = orderId ? Number(orderId) : existingOrder.id;
             order = await prisma.order.update({
-                where: { id: Number(orderId) },
+                where: { id: idToUpdate },
                 data: {
-                    total: { increment: parseFloat(total) }
+                    total: { increment: parseFloat(total) },
+                    kitchenStatus: 'PENDING'
                 }
             });
         } else {
@@ -399,14 +442,16 @@ app.post('/orders', async (req, res) => {
         }
 
         // --- AUTOMAÇÃO: Criar solicitação de impressão para o Electron ---
-        await prisma.printRequest.create({
-            data: {
-                tableNum: Number(tableNum),
-                orderId: order.id,
-                status: 'pending'
-            }
-        });
-        console.log(`[PRINT] Solicitação criada para Mesa ${tableNum} (Pedido ${order.id})`);
+        if (!skipPrint) {
+            await prisma.printRequest.create({
+                data: {
+                    tableNum: Number(tableNum),
+                    orderId: order.id,
+                    status: 'pending'
+                }
+            });
+            console.log(`[PRINT] Solicitação criada para Mesa ${tableNum} (Pedido ${order.id})`);
+        }
 
         res.json(order);
     } catch (error) {
