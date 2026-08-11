@@ -673,6 +673,72 @@ app.get('/orders/:id', async (req, res) => {
     }
 });
 
+// --- ROTA: EXCLUIR UM PEDIDO ---
+app.delete('/orders/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const orderId = Number(id);
+
+        // 1. Deletar os itens do pedido primeiro para evitar erro de chave estrangeira
+        await prisma.orderItem.deleteMany({
+            where: { orderId: orderId }
+        });
+
+        // 2. Deletar as solicitações de impressão vinculadas
+        await prisma.printRequest.deleteMany({
+            where: { orderId: orderId }
+        });
+
+        // 3. Deletar o pedido em si
+        await prisma.order.delete({
+            where: { id: orderId }
+        });
+
+        console.log(`[DELETE_ORDER] Pedido ${orderId} excluído permanentemente.`);
+        res.json({ success: true, message: 'Pedido excluído com sucesso.' });
+    } catch (error) {
+        console.error("[DELETE_ORDER] Erro ao excluir pedido:", error);
+        res.status(500).json({ error: 'Erro ao excluir pedido', details: String(error) });
+    }
+});
+
+// --- ROTA: EXCLUIR ITEM DO PEDIDO ---
+app.delete('/orders/items/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const itemId = Number(id);
+
+        // 1. Buscar o item para saber o valor e o pedido ao qual pertence
+        const item = await prisma.orderItem.findUnique({
+            where: { id: itemId }
+        });
+
+        if (!item) {
+            return res.status(404).json({ error: 'Item não encontrado.' });
+        }
+
+        // 2. Excluir o item
+        await prisma.orderItem.delete({
+            where: { id: itemId }
+        });
+
+        // 3. Subtrair o valor do item do total do pedido
+        const amountToDeduct = item.price * item.quantity;
+        await prisma.order.update({
+            where: { id: item.orderId },
+            data: {
+                total: { decrement: amountToDeduct }
+            }
+        });
+
+        console.log(`[DELETE_ITEM] Item ${itemId} excluído. Subtraído R$${amountToDeduct} do pedido ${item.orderId}.`);
+        res.json({ success: true, message: 'Item excluído e total atualizado.' });
+    } catch (error) {
+        console.error("[DELETE_ITEM] Erro ao excluir item:", error);
+        res.status(500).json({ error: 'Erro ao excluir item', details: String(error) });
+    }
+});
+
 // --- ROTAS DE GERENCIAMENTO DE PRODUTOS ---
 
 // 1. LISTAR PRODUTOS
