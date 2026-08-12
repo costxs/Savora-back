@@ -708,7 +708,7 @@ app.delete('/orders/items/:id', async (req, res) => {
     try {
         const itemId = Number(id);
 
-        // 1. Buscar o item para saber o valor e o pedido ao qual pertence
+        // 1. Buscar o item para saber o valor e a quantidade
         const item = await prisma.orderItem.findUnique({
             where: { id: itemId }
         });
@@ -717,13 +717,25 @@ app.delete('/orders/items/:id', async (req, res) => {
             return res.status(404).json({ error: 'Item não encontrado.' });
         }
 
-        // 2. Excluir o item
-        await prisma.orderItem.delete({
-            where: { id: itemId }
-        });
+        const amountToDeduct = item.price; // Vamos subtrair apenas o valor de UMA unidade
 
-        // 3. Subtrair o valor do item do total do pedido
-        const amountToDeduct = item.price * item.quantity;
+        // 2. Verifica a quantidade
+        if (item.quantity > 1) {
+            // Diminui apenas a quantidade em 1
+            await prisma.orderItem.update({
+                where: { id: itemId },
+                data: { quantity: { decrement: 1 } }
+            });
+            console.log(`[DELETE_ITEM] Unidade do Item ${itemId} reduzida (de ${item.quantity} para ${item.quantity - 1}).`);
+        } else {
+            // Se tem só 1 unidade, exclui a linha inteira
+            await prisma.orderItem.delete({
+                where: { id: itemId }
+            });
+            console.log(`[DELETE_ITEM] Item ${itemId} excluído totalmente.`);
+        }
+
+        // 3. Subtrai o valor (unitário) do total do pedido
         await prisma.order.update({
             where: { id: item.orderId },
             data: {
@@ -731,8 +743,8 @@ app.delete('/orders/items/:id', async (req, res) => {
             }
         });
 
-        console.log(`[DELETE_ITEM] Item ${itemId} excluído. Subtraído R$${amountToDeduct} do pedido ${item.orderId}.`);
-        res.json({ success: true, message: 'Item excluído e total atualizado.' });
+        console.log(`[DELETE_ITEM] Subtraído R$${amountToDeduct} do pedido ${item.orderId}.`);
+        res.json({ success: true, message: 'Unidade do item removida e total atualizado.' });
     } catch (error) {
         console.error("[DELETE_ITEM] Erro ao excluir item:", error);
         res.status(500).json({ error: 'Erro ao excluir item', details: String(error) });
