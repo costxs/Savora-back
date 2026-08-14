@@ -791,7 +791,29 @@ app.post('/products', async (req, res) => {
     }
 });
 
-// 2. DELETAR PRODUTO
+// 3. ATUALIZAR PRODUTO
+app.put('/products/:id', async (req, res) => {
+    const { id } = req.params;
+    const { name, price, cost, code, categoryId } = req.body;
+    try {
+        const product = await prisma.product.update({
+            where: { id: Number(id) },
+            data: {
+                name,
+                price: parseFloat(price),
+                cost: parseFloat(cost || 0),
+                code: code || '',
+                categoryId: Number(categoryId)
+            }
+        });
+        res.json(product);
+    } catch (error) {
+        console.error("Erro ao atualizar produto:", error);
+        res.status(500).json({ error: 'Erro ao atualizar produto' });
+    }
+});
+
+// 4. DELETAR PRODUTO
 app.delete('/products/:id', async (req, res) => {
     const { id } = req.params;
     try {
